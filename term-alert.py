@@ -1,22 +1,56 @@
-#!/bin/python3
 import os
 import urwid
 import time
+import magic
 
-bad_files_to_search = ['testfile']
+theList = {}
+for root, dirs, files in os.walk("/", topdown=True): #intial indexing of everything except /proc (funky directory)
+    if "proc" in dirs:
+        dirs.remove("proc")
+    if "run" in dirs:
+        dirs.remove("run")
+    if "mnt" in dirs:
+        dirs.remove("mnt")
+    if "lib" in dirs:
+        dirs.remove("lib")
+    for name in files:
+        x = os.path.join(root, name)
+        if theList.__contains__(x) == False:
+            theList[x] = 1
+        else:
+            theList[x] += 1
 
- 
 def signal_alert():
 # Signals used for alerts
     signal = False
     message = 'ALERT!'
-    for file in bad_files_to_search:
-        if (os.path.exists(file)):
-            signal = True
-            message += '\n' + file + ' exists'
-
+    theCheckList = {}
+    for root, dirs, files in os.walk("/", topdown=True): #comparison indexing
+        if "proc" in dirs:
+            dirs.remove("proc")
+        if "run" in dirs:
+            dirs.remove("run")
+        if "mnt" in dirs:
+            dirs.remove("mnt")
+        if "lib" in dirs:
+            dirs.remove("lib")
+        for name in files:
+            x = os.path.join(root, name)
+            if theCheckList.__contains__(x) == False:
+                theCheckList[x] = 1
+            else:
+                theCheckList[x] += 1  
+    if theCheckList != theList:
+        differenceDict = dict(set(theCheckList.items()) - set(theList.items())) #remove all original array items from array from new check to see whats up
+        for key in differenceDict:
+            try:
+                if "ELF" in magic.from_file(key) or "PHP" in magic.from_file(key) or "script" in magic.from_file(key): #are any of the new items elfs
+                    signal = True
+                    message += '\n' + key + ' exists'
+            except:
+                continue
     if signal:
-        return (True, message) 
+        return(True, message)
     return (False, 'nothing detected')
 
 class Alert:
@@ -107,3 +141,5 @@ def main():
 
 if '__main__'==__name__:
     main()
+    
+
