@@ -4,7 +4,8 @@ from time import sleep
 from threading import Thread 
 
 MAX_ALERTS = 20
-
+FRAME_HEADER = "Term-Alert v2.0"
+TAB_SIZE = 4
 
 class PopUpDialog(urwid.WidgetWrap):
     """A dialog that appears with nothing but a close button """
@@ -27,13 +28,16 @@ class PopUpDialog(urwid.WidgetWrap):
         return self.message
 
 class Alert(urwid.PopUpLauncher):
+    count = 1
     def __init__(self, title, message):
-        #self.__super.__init__(urwid.AttrMap(urwid.Button(title), 'a_banner'))
+        self.id = Alert.count
+        title = expand_tab(str(self.id) + '.\t'+ title)
         self.__super.__init__(urwid.Button(title))
         urwid.connect_signal(self.original_widget, 'click',
             lambda button: self.open_pop_up())
         self.pop_up = PopUpDialog('\n'+title+'\n',message+'\n\n')
         self.message = message
+        Alert.count += 1
 
     def create_pop_up(self):
         urwid.connect_signal(self.pop_up, 'close',
@@ -44,7 +48,6 @@ class Alert(urwid.PopUpLauncher):
         colsrows = urwid.raw_display.Screen().get_cols_rows()
         cols = colsrows[0]-4
         rows = max(7, int(len(self.message)/int(cols/2))+1)
-        #self.set_description(self.pop_up.get_description()+'\n'+str(cols)+ ' : ' +str(len(self.message)))
         return {'left':0, 'top':1, 'overlay_width':cols, 'overlay_height':rows}
 
     def set_description(self, message):
@@ -68,7 +71,7 @@ class TUI(Thread):
         self.cancelled = False 
         
         for i in range(26):
-            TUI.alerts.append(Alert('alert ' + str(i), 'message'))
+            TUI.alerts.append(Alert('alert ' + str(i+1), 'message'))
         
         self.draw()
 
@@ -140,19 +143,33 @@ class TUI(Thread):
         pile.contents.clear()
         for item in [ outside, inside, streak, inside, outside ]:
             pile.contents.append((item, pile.options()))
-        pile.set_focus(2)
-        TUI.frame = urwid.Frame(background, header=urwid.Text("Term-Alert v2.0"))
+        pile.focus_position = 2
+        TUI.frame = urwid.Frame(background, header=urwid.Text(FRAME_HEADER))
         if TUI.loop:
             TUI.loop.screen.clear()
+            TUI.loop.widget = TUI.frame
 
 
     def update_ui(self, loop=None, user_data=None):
         self.change_screen() 
         TUI.animate_alarm = TUI.loop.set_alarm_in(0.1, self.update_ui)
 
+def expand_tab(text: str, width: int = TAB_SIZE):
+    width = max(2, width)
+    result = []
+    for line in text.splitlines():
+        try:
+            while True:
+                i = line.index('\t')
+                pad = ' ' * (width - (i % width))
+                line = line.replace('\t', pad, 1)
+        except ValueError:
+            result.append(line)
+    return '\n'.join(result)
 
 def main():
     tui = TUI().start()
+    TUI.alerts.append(Alert('test', 'test'))
 
 if __name__=='__main__':
     main()
