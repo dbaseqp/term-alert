@@ -1,145 +1,158 @@
-import os
+#!/usr/bin/env python
 import urwid
-import time
-import magic
+from time import sleep
+from threading import Thread 
 
-theList = {}
-for root, dirs, files in os.walk("/", topdown=True): #intial indexing of everything except /proc (funky directory)
-    if "proc" in dirs:
-        dirs.remove("proc")
-    if "run" in dirs:
-        dirs.remove("run")
-    if "mnt" in dirs:
-        dirs.remove("mnt")
-    if "lib" in dirs:
-        dirs.remove("lib")
-    for name in files:
-        x = os.path.join(root, name)
-        if theList.__contains__(x) == False:
-            theList[x] = 1
-        else:
-            theList[x] += 1
+MAX_ALERTS = 20
 
-def signal_alert():
-# Signals used for alerts
-    signal = False
-    message = 'ALERT!'
-    theCheckList = {}
-    for root, dirs, files in os.walk("/", topdown=True): #comparison indexing
-        if "proc" in dirs:
-            dirs.remove("proc")
-        if "run" in dirs:
-            dirs.remove("run")
-        if "mnt" in dirs:
-            dirs.remove("mnt")
-        if "lib" in dirs:
-            dirs.remove("lib")
-        for name in files:
-            x = os.path.join(root, name)
-            if theCheckList.__contains__(x) == False:
-                theCheckList[x] = 1
-            else:
-                theCheckList[x] += 1  
-    if theCheckList != theList:
-        differenceDict = dict(set(theCheckList.items()) - set(theList.items())) #remove all original array items from array from new check to see whats up
-        for key in differenceDict:
-            try:
-                if "ELF" in magic.from_file(key) or "PHP" in magic.from_file(key) or "script" in magic.from_file(key): #are any of the new items elfs
-                    signal = True
-                    message += '\n' + key + ' exists'
-            except:
-                continue
-    if signal:
-        return(True, message)
-    return (False, 'nothing detected')
 
-class Alert:
+class PopUpDialog(urwid.WidgetWrap):
+    """A dialog that appears with nothing but a close button """
+    signals = ['close']
+    close_message = 'close'
+    def __init__(self, title, message):
+        self.title = title
+        self.set_description(message)
+
+    def set_description(self, message):
+        close_button = urwid.Button(PopUpDialog.close_message)
+        urwid.connect_signal(close_button, 'click',
+            lambda button:self._emit("close"))
+        pile = urwid.Pile([urwid.Text(self.title, align='center'), urwid.Text(message), close_button])
+        fill = urwid.Filler(pile)
+        self.__super.__init__(urwid.AttrWrap(fill, 'popbg'))
+        self.message = message
+
+    def get_description(self):
+        return self.message
+
+class Alert(urwid.PopUpLauncher):
+    def __init__(self, title, message):
+        #self.__super.__init__(urwid.AttrMap(urwid.Button(title), 'a_banner'))
+        self.__super.__init__(urwid.Button(title))
+        urwid.connect_signal(self.original_widget, 'click',
+            lambda button: self.open_pop_up())
+        self.pop_up = PopUpDialog('\n'+title+'\n',message+'\n\n')
+        self.message = message
+
+    def create_pop_up(self):
+        urwid.connect_signal(self.pop_up, 'close',
+            lambda button: self.close_pop_up())
+        return self.pop_up
+
+    def get_pop_up_parameters(self):
+        colsrows = urwid.raw_display.Screen().get_cols_rows()
+        cols = colsrows[0]-4
+        rows = max(7, int(len(self.message)/int(cols/2))+1)
+        #self.set_description(self.pop_up.get_description()+'\n'+str(cols)+ ' : ' +str(len(self.message)))
+        return {'left':0, 'top':1, 'overlay_width':cols, 'overlay_height':rows}
+
+    def set_description(self, message):
+        self.pop_up.set_description(message)
+        self.message = self.pop_up.get_description()
+
+class TUI(Thread):
+    status = False
+    animate_alarm = None
+    palette = []
+    placeholder = urwid.SolidFill()
+    alerts = [] 
+    lb = None
+    frame = None
+    content = None
+    loop = None
+
     def __init__(self):
-        self.loop = None
-        self.animate_alarm = None
-        self.placeholder = urwid.SolidFill()
-        self.palette = []
+        super(TUI, self).__init__()
+        self.daemon = False
+        self.cancelled = False 
+        
+        for i in range(26):
+            TUI.alerts.append(Alert('alert ' + str(i), 'message'))
+        
+        self.draw()
 
-    def update_screen(self):
-        result = signal_alert()
-        if result[0]:
-            self.alert_screen(result[1])
-        else:
-            self.calm_screen(result[1])
-        self.loop.screen.clear()
-            
+    def run(self):
+        while not self.cancelled:
+            self.update()
+            sleep(0.1)
+
+    def cancel(self):
+        self.cancelled = True
+
+    def update(self):
+        pass
+
     def handle_input(self, key):
         if key in ('q', 'Q'):
+            self.cancel()
             raise urwid.ExitMainLoop()
+        elif key in ('c', 'C'):
+            TUI.alerts.clear()
+            TUI.content[:] = TUI.alerts
+            self.change_screen()
+        elif key in ('a', 'A'):
+            TUI.alerts.append(Alert('new alert', 'exampledescription'*20))
+            TUI.content[:] = TUI.alerts
+            self.change_screen()
         else:
-            self.update()
-
-    def alert_screen(self, message):
-        self.palette = [
-            ('banner', '', '', '', '#ffa', '#60d'),
-            ('streak', '', '', '', 'g50', '#60a'),
-            ('inside', '', '', '', 'g38', '#808'),
-            ('outside', '', '', '', 'g27', '#a06'),
-            ('bg', '', '', '', 'g7', '#d06'),]
-        self.txt.set_text(('banner', message))
-        if self.loop:
-            self.loop.screen.register_palette(self.palette)
-            self.loop.widget = urwid.AttrMap(self.placeholder, 'bg')
-            self.loop.widget.original_widget = urwid.Filler(urwid.Pile([]))
-            div = urwid.Divider()
-            outside = urwid.AttrMap(div, 'outside')
-            inside = urwid.AttrMap(div, 'inside')
-            streak = urwid.AttrMap(self.txt, 'streak')
-            pile = self.loop.widget.base_widget # .base_widget skips the decorations
-            for item in [outside, inside, streak, inside, outside]:
-                pile.contents.append((item, pile.options()))
-
-    def calm_screen(self, message):
-        self.palette = [
-            ('banner', '', '', '', '#ffa', '#066'),
-            ('streak', '', '', '', '#066', '#066'),
-            ('inside', '', '', '', '#076', '#076'),
-            ('outside', '', '', '', '#0a5', '#0a5'),
-            ('bg', '', '', '', '#0c5', '#0c5'),]
-        self.txt.set_text(('banner', message))
-        if self.loop:
-            self.loop.screen.register_palette(self.palette)
-            self.loop.widget = urwid.AttrMap(self.placeholder, 'bg')
-            self.loop.widget.original_widget = urwid.Filler(urwid.Pile([]))
-            div = urwid.Divider()
-            outside = urwid.AttrMap(div, 'outside')
-            inside = urwid.AttrMap(div, 'inside')
-            streak = urwid.AttrMap(self.txt, 'streak')
-            pile = self.loop.widget.base_widget # .base_widget skips the decorations
-            for item in [outside, inside, streak, inside, outside]:
-                pile.contents.append((item, pile.options()))
+            if not TUI.status:
+                TUI.status = True
+                self.update_ui()
 
     def draw(self):
-    # The main method for starting the Alarm. 
-        self.txt = urwid.Text(('banner', u'Press any button...'), align='center')
-        self.loop = urwid.MainLoop(self.placeholder, self.palette, unhandled_input=self.handle_input)
-        
-        self.loop.screen.set_terminal_properties(colors=256)
-        self.loop.widget = urwid.AttrMap(self.placeholder, 'bg')
-        self.loop.widget.original_widget = urwid.Filler(urwid.Pile([]))
-        div = urwid.Divider()
-        outside = urwid.AttrMap(div, 'outside')
-        inside = urwid.AttrMap(div, 'inside')
-        streak = urwid.AttrMap(self.txt, 'streak')
-        pile = self.loop.widget.base_widget # .base_widget skips the decorations
-        pile.contents.clear()
-        for item in [outside, inside, streak, inside, outside]:
-            pile.contents.append((item, pile.options()))
-        self.loop.run()
+        TUI.palette = [
+        ('popbg', 'white', 'dark blue'),
+        ('a_banner', '', '', '', '#ffa', '#60d'),
+        ('a_streak', '', '', '', 'g50', '#60a'),
+        ('a_inside', '', '', '', 'g38', '#808'),
+        ('a_outside', '', '', '', 'g27', '#a06'),
+        ('a_bg', '', '', '', 'g7', '#d06'),
+        ('c_banner', '', '', '', '#ffa', '#066'),
+        ('c_streak', '', '', '', '#066', '#066'),
+        ('c_inside', '', '', '', '#076', '#076'),
+        ('c_outside', '', '', '', '#0a5', '#0a5'),
+        ('c_bg', '', '', '', '#0c5', '#0c5')
+        ]
+        TUI.content = urwid.SimpleFocusListWalker(TUI.alerts)
+        TUI.lb = urwid.ListBox(TUI.content)
+        self.change_screen()
+        TUI.loop = urwid.MainLoop(
+            TUI.frame,
+            TUI.palette,
+            pop_ups=True, 
+            unhandled_input=self.handle_input)
+        TUI.loop.screen.set_terminal_properties(colors=256)
+        TUI.loop.run()
 
-    def update(self, loop=None, user_data=None):
-        self.update_screen()
-        self.animate_alarm = self.loop.set_alarm_in(0.1, self.update)
+    def change_screen(self):
+        warning =  False if len(TUI.alerts) == 0 else True
+        background = urwid.AttrMap(TUI.placeholder, 'a_bg' if warning else 'c_bg' )
+        background.original_widget = urwid.Filler(urwid.Pile([]))
+        pile = background.base_widget
+        div = urwid.Divider()
+        outside = urwid.AttrMap(div, 'a_outside' if warning else 'c_outside')
+        inside = urwid.AttrMap(div, 'a_inside' if warning else 'c_inside')
+        if warning:
+            streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.alerts), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
+        else:
+            streak = urwid.AttrMap(urwid.Text(('c_banner', u'nothing detected'), align='center'), 'c_streak')
+        pile.contents.clear()
+        for item in [ outside, inside, streak, inside, outside ]:
+            pile.contents.append((item, pile.options()))
+        pile.set_focus(2)
+        TUI.frame = urwid.Frame(background, header=urwid.Text("Term-Alert v2.0"))
+        if TUI.loop:
+            TUI.loop.screen.clear()
+
+
+    def update_ui(self, loop=None, user_data=None):
+        self.change_screen() 
+        TUI.animate_alarm = TUI.loop.set_alarm_in(0.1, self.update_ui)
+
 
 def main():
-    Alert().draw()
+    tui = TUI().start()
 
-if '__main__'==__name__:
+if __name__=='__main__':
     main()
-    
-
