@@ -2,10 +2,71 @@
 import urwid
 from time import sleep
 from threading import Thread 
+import re
+from os.path import exists
 
 MAX_ALERTS = 20
 FRAME_HEADER = "Term-Alert v2.0"
 TAB_SIZE = 4
+POLLING_RATE = 5
+
+files = ['audit.log']
+
+class Parser():
+    parsed_events = []
+    files = {}
+    def  __init__(self):
+        for entry in files:
+            Parser.files.update({entry : 0})
+    
+    def parse(self, file_to_parse):
+        if exists(file_to_parse):
+            line_count = Parser.files.get(file_to_parse)
+            lines = 0
+            current_line = 0
+            with open(file_to_parse) as infile:
+                event = ''
+                for line in infile:
+                    if current_line >= line_count:
+                        if '----' in line:
+                            if event:
+                                self.add_event(event)
+                                event = ''
+                        else:
+                            start_index = 0 
+                            event += line[start_index:] + '\n'
+                    current_line+=1
+                if event:
+                    self.add_event(event)
+            Parser.files.update({file_to_parse : current_line})
+            return [] if current_line == line_count else Parser.parsed_events
+        else:
+            return []
+
+    def add_event(self, event):
+        if 'key=user_modification' in event:
+            result = self.user_event(event)
+        else:
+            result = ('NO KNOWN FORMAT FOR EVENT', event)
+        Parser.parsed_events.append( result )
+
+    def user_event(self, event):
+        title = 'Unknown user event'
+        try:
+            m = re.search('(?<=proctitle=).+', event)
+            result = m.group(0).strip()
+            if 'useradd' in result or 'adduser' in result:
+                title = 'New user detected \''+ result[result.rindex(' ')+1:]+'\''
+            elif 'userdel' in result or 'deluser' in result:
+                title = 'User deleted \''+ result[result.rindex(' ')+1:]+'\''
+        except AttributeError:
+            title = m
+        try:
+            m = re.search('(?<=type=SYSCALL ).+', event)
+            description = m.group(0).strip()
+        except AttributeError:
+            description = m
+        return ( title, description )
 
 class PopUpDialog(urwid.WidgetWrap):
     """A dialog that appears with nothing but a close button """
@@ -54,7 +115,7 @@ class Alert(urwid.PopUpLauncher):
         self.pop_up.set_description(message)
         self.message = self.pop_up.get_description()
 
-class TUI(Thread):
+class TUI():
     status = False
     animate_alarm = None
     palette = []
@@ -66,36 +127,14 @@ class TUI(Thread):
     loop = None
 
     def __init__(self):
-        super(TUI, self).__init__()
-        self.daemon = False
-        self.cancelled = False 
-        
-        for i in range(26):
-            TUI.alerts.append(Alert('alert ' + str(i+1), 'message'))
-        
+        self.p = Parser()
         self.draw()
-
-    def run(self):
-        while not self.cancelled:
-            self.update()
-            sleep(0.1)
-
-    def cancel(self):
-        self.cancelled = True
-
-    def update(self):
-        pass
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
-            self.cancel()
             raise urwid.ExitMainLoop()
         elif key in ('c', 'C'):
             TUI.alerts.clear()
-            TUI.content[:] = TUI.alerts
-            self.change_screen()
-        elif key in ('a', 'A'):
-            TUI.alerts.append(Alert('new alert', 'exampledescription'*20))
             TUI.content[:] = TUI.alerts
             self.change_screen()
         else:
@@ -138,8 +177,10 @@ class TUI(Thread):
         inside = urwid.AttrMap(div, 'a_inside' if warning else 'c_inside')
         if warning:
             streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.alerts), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
-        else:
+        elif TUI.status:
             streak = urwid.AttrMap(urwid.Text(('c_banner', u'nothing detected'), align='center'), 'c_streak')
+        else:
+            streak = urwid.AttrMap(urwid.Text(('c_banner', u'Press any button'), align='center'), 'c_streak')
         pile.contents.clear()
         for item in [ outside, inside, streak, inside, outside ]:
             pile.contents.append((item, pile.options()))
@@ -152,6 +193,7 @@ class TUI(Thread):
 
     def update_ui(self, loop=None, user_data=None):
         self.change_screen() 
+        TUI.content[:] = TUI.alerts
         TUI.animate_alarm = TUI.loop.set_alarm_in(0.1, self.update_ui)
 
 def expand_tab(text: str, width: int = TAB_SIZE):
@@ -168,8 +210,25 @@ def expand_tab(text: str, width: int = TAB_SIZE):
     return '\n'.join(result)
 
 def main():
-    tui = TUI().start()
-    TUI.alerts.append(Alert('test', 'test'))
+    side_thread = Thread(target=start_parser, daemon=True)
+    side_thread.start()
+    start_tui()
+
+def start_tui():
+   TUI() 
+
+def start_parser():
+   p = Parser()
+   while True:
+       for infile in files:
+           entry = 0
+           if TUI.status: 
+               res = p.parse(infile)
+               for alert in res:
+                   if entry >= len(TUI.alerts):
+                       TUI.alerts.append(Alert(alert[0], alert[1]))
+                   entry += 1
+               sleep(POLLING_RATE)
 
 if __name__=='__main__':
     main()
