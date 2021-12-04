@@ -10,7 +10,8 @@ FRAME_HEADER = "Term-Alert v2.0"
 TAB_SIZE = 4
 POLLING_RATE = 5
 
-files = ['audit.log']
+#files = ['user_mod.log']
+files = ['audit.log.parsed']
 
 class Parser():
     parsed_events = []
@@ -89,8 +90,9 @@ class PopUpDialog(urwid.WidgetWrap):
         return self.message
 
 class Alert(urwid.PopUpLauncher):
-    count = 1
+    count = 0
     def __init__(self, title, message):
+        Alert.count += 1
         self.id = Alert.count
         title = expand_tab(str(self.id) + '.\t'+ title)
         self.__super.__init__(urwid.Button(title))
@@ -98,7 +100,7 @@ class Alert(urwid.PopUpLauncher):
             lambda button: self.open_pop_up())
         self.pop_up = PopUpDialog('\n'+title+'\n',message+'\n\n')
         self.message = message
-        Alert.count += 1
+        TUI.header.contents[1][0].set_text('Last event: '+str(Alert.count))
 
     def create_pop_up(self):
         urwid.connect_signal(self.pop_up, 'close',
@@ -125,10 +127,33 @@ class TUI():
     frame = None
     content = None
     loop = None
+    footer_search = None 
+    header = urwid.Columns([urwid.Text(FRAME_HEADER, align='left'), urwid.Text('Last event: '+str(Alert.count), align='center'), urwid.Text('', align='right')], dividechars=2)
+    search_text = urwid.Edit('Search: ')
+    search_button = urwid.Button('Search')
+
 
     def __init__(self):
         self.p = Parser()
+        urwid.connect_signal(TUI.search_button, 'click', self.search)
+        search_widgets = [('weight', 3, TUI.search_text), ('weight', 1, TUI.search_button)] 
+        TUI.footer_search = urwid.Columns(search_widgets, dividechars=3, min_width=4)
         self.draw()
+    def search(self, state):
+        query = TUI.search_text.get_edit_text()
+        try:
+            m = re.search('(.+)=(.+)', query)
+            key = m.group(1)
+            value = m.group(2)
+            if(key == 'j' ):
+                TUI.frame.focus_position = 'body'
+                TUI.lb.body.set_focus(int(value)-1)
+                TUI.header.contents[2][0].set_text('Search success ')
+            #TUI.header.contents[2][0].set_text('No match found')
+            else:
+                raise AttributeError
+        except AttributeError:
+            TUI.header.contents[2][0].set_text('Invalid search ')
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
@@ -137,6 +162,10 @@ class TUI():
             TUI.alerts.clear()
             TUI.content[:] = TUI.alerts
             self.change_screen()
+        elif key in ('s', 'S'):
+            TUI.frame.focus_position = 'footer'
+        elif key == 'esc':
+            TUI.frame.focus_position = 'body'
         else:
             if not TUI.status:
                 TUI.status = True
@@ -154,7 +183,8 @@ class TUI():
         ('c_streak', '', '', '', '#066', '#066'),
         ('c_inside', '', '', '', '#076', '#076'),
         ('c_outside', '', '', '', '#0a5', '#0a5'),
-        ('c_bg', '', '', '', '#0c5', '#0c5')
+        ('c_bg', '', '', '', '#0c5', '#0c5'),
+        ('warning', '', '', '', '#111', 'brown')
         ]
         TUI.content = urwid.SimpleFocusListWalker(TUI.alerts)
         TUI.lb = urwid.ListBox(TUI.content)
@@ -169,23 +199,33 @@ class TUI():
 
     def change_screen(self):
         warning =  False if len(TUI.alerts) == 0 else True
-        background = urwid.AttrMap(TUI.placeholder, 'a_bg' if warning else 'c_bg' )
+        bg_color = 'a_bg' if warning else 'c_bg'
+        if warning:
+            streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.alerts), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
+        elif TUI.status:
+            streak = urwid.AttrMap(urwid.Text(('c_banner', u'No valid files to parse!'), align='center'), 'c_streak')
+            bg_color = 'warning'
+            for check in files:
+                if exists(check):
+                    bg_color = 'c_bg'
+                    streak = urwid.AttrMap(urwid.Text(('c_banner', u'nothing detected'), align='center'), 'c_streak')
+                    break;
+        else:
+            streak = urwid.AttrMap(urwid.Text(('warning', u'Press any button...'), align='center'), 'warning')
+        background = urwid.AttrMap(TUI.placeholder,  bg_color)
         background.original_widget = urwid.Filler(urwid.Pile([]))
         pile = background.base_widget
         div = urwid.Divider()
         outside = urwid.AttrMap(div, 'a_outside' if warning else 'c_outside')
         inside = urwid.AttrMap(div, 'a_inside' if warning else 'c_inside')
-        if warning:
-            streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.alerts), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
-        elif TUI.status:
-            streak = urwid.AttrMap(urwid.Text(('c_banner', u'nothing detected'), align='center'), 'c_streak')
-        else:
-            streak = urwid.AttrMap(urwid.Text(('c_banner', u'Press any button'), align='center'), 'c_streak')
         pile.contents.clear()
         for item in [ outside, inside, streak, inside, outside ]:
             pile.contents.append((item, pile.options()))
-        pile.focus_position = 2
-        TUI.frame = urwid.Frame(background, header=urwid.Text(FRAME_HEADER))
+        if not TUI.status or TUI.frame.get_focus() == 'body':
+            pile.focus_position = 2
+
+        pos = TUI.frame.focus_position if TUI.status else 'body'
+        TUI.frame = urwid.Frame(background, header=TUI.header, footer=TUI.footer_search, focus_part=pos)
         if TUI.loop:
             TUI.loop.screen.clear()
             TUI.loop.widget = TUI.frame
