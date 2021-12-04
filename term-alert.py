@@ -141,19 +141,27 @@ class TUI():
         self.draw()
     def search(self, state):
         query = TUI.search_text.get_edit_text()
+        message = ''
         try:
-            m = re.search('(.+)=(.+)', query)
-            key = m.group(1)
-            value = m.group(2)
-            if(key == 'j' ):
-                TUI.frame.focus_position = 'body'
-                TUI.lb.body.set_focus(int(value)-1)
-                TUI.header.contents[2][0].set_text('Search success ')
-            #TUI.header.contents[2][0].set_text('No match found')
-            else:
+            m = re.findall(r'\b(\S+)=(\S+?)\b', query)
+            if len(m) == 0:
                 raise AttributeError
+            for term in m:
+                key = term[0]
+                value = term[1]
+                message = ('nomatch', ' No match found ')
+                if(key == 'j' ):
+                    jump_index = int(value)-1
+                    if jump_index < Alert.count:
+                        TUI.frame.focus_position = 'body'
+                        TUI.lb.body.set_focus(jump_index)
+                        message = ('success', ' Search success ')
+                else:
+                    raise AttributeError
         except AttributeError:
-            TUI.header.contents[2][0].set_text('Invalid search ')
+            message = ('invalid', ' Invalid search ')
+        if message:
+            TUI.header.contents[2][0].set_text(message)
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
@@ -164,6 +172,7 @@ class TUI():
             self.change_screen()
         elif key in ('s', 'S'):
             TUI.frame.focus_position = 'footer'
+            TUI.footer_search.focus_position = 0
         elif key == 'esc':
             TUI.frame.focus_position = 'body'
         else:
@@ -184,7 +193,10 @@ class TUI():
         ('c_inside', '', '', '', '#076', '#076'),
         ('c_outside', '', '', '', '#0a5', '#0a5'),
         ('c_bg', '', '', '', '#0c5', '#0c5'),
-        ('warning', '', '', '', '#111', 'brown')
+        ('warning', '', '', '', '#111', 'brown'),
+        ('success', 'white', 'dark green'),
+        ('invalid', 'yellow', 'dark red'),
+        ('nomatch', 'white', 'dark blue')
         ]
         TUI.content = urwid.SimpleFocusListWalker(TUI.alerts)
         TUI.lb = urwid.ListBox(TUI.content)
