@@ -13,6 +13,7 @@ POLLING_RATE = 5
 #files = ['user_mod.log']
 files = ['audit.log.parsed']
 
+
 class Parser():
     parsed_events = []
     files = {}
@@ -45,16 +46,99 @@ class Parser():
             return []
 
     def add_event(self, event):
-        if 'key=user_modification' in event:
-            result = self.user_event(event)
-        else:
-            result = ('NO KNOWN FORMAT FOR EVENT', event)
+        key = re.search('(?<= key=)(\w+)', event)
+        event_type = re.search(r'\b(?<=type=)(\w+)', event)
+        try:
+            if 'proctitle=grep' in event:
+                cmd = 'Command=\''+re.search('(?<= proctitle=)(.+)', event).group(0)+'\''
+                uid = re.search('auid=\w+ uid=\w+', event).group(0)
+                description = '\n' + uid.replace(' ', ', ') + '\n'
+                result = ('GREP Event: '+cmd, cmd+description)
+            elif key.group(0) == 'user_modification':
+                result = self.user_event(event)
+            elif key.group(0) == 'recon':
+                result = self.recon_event(event)
+            elif event_type.group(0) == 'USER_AUTH':
+                result = self.auth_event(event)
+            elif key.group(0) == 'rootcmd':
+                result = self.rootcmd_event(event)
+            else:
+                result = (key.group(0), event)
+        except AttributeError:
+            if event_type and event_type.group(0) == 'USER_AUTH':
+                result = self.auth_event(event)
+            else:
+                result = ('NO KNOWN FORMAT FOR EVENT', event)
         Parser.parsed_events.append( result )
+
+    def rootcmd_event(self, event):
+        title = 'rootcmd: '
+        description = event
+        try:
+            m = re.search('(?<= proctitle=).+', event)
+            title += m.group(0).strip()
+        except AttributeError:
+            title += 'cannot determine command'
+        return (title, description)
+
+    def auth_event(self, event):
+        title = 'Unknown auth event'
+        description = ''
+        try:
+            acct = re.search('(?<= acct=)(\S+)', event).group(0)
+            exe = re.search('(?<= exe=)(\S+)', event).group(0)
+            addr = re.search('(?<= addr=)(\S+)', event).group(0)
+            description += 'Account: '+acct+'\n'
+            description += 'Command: '+exe+'\n'
+            description += 'Address: '
+            description += addr if not addr == '?' else 'localhost'+'\n'
+            description += 'key=USER_AUTH\n'
+            description += '\n'+event+'\n'
+            title += ': Acct = '+acct+' | exe = '+exe
+        except AttributeError:
+            return (title, description)
+        return ( title, description )
+
+    def recon_event(self, event):
+        key = 'recon'
+        pid = int(re.search('(?<= pid=)(\d+)', event).group(0))
+        ppid = int(re.search('(?<= ppid=)(\d+)', event).group(0))
+        title = 'Uknown RECON event'
+        description = ''
+        process_tree = [pid]
+        is_ssh = False
+        is_reverse_shell = False
+        found = True
+        while not ppid in (0, 1) and found:
+            found = False
+            for entry in TUI.alerts:
+                if entry.pid == ppid: 
+                    ppid = entry.ppid
+                    found = True
+                    TUI.header.contents[1][0].set_text(str(ppid))
+                    if '/ssh' in entry.message:
+                        is_ssh = True
+                    if '/nc' in entry.message:
+                        is_reverse_shell = True
+                    break;
+            process_tree.append(ppid)
+        
+        description += 'Full Process Tree:\n' + str(process_tree) + '\n'
+        description += 'Event info: key=recon\n'
+        description += '\n'+event+'\n'
+
+        if is_ssh:
+            title = 'Probably an ssh Session'
+        elif is_reverse_shell:
+            title = 'Probably a reverse Shell'
+        else:
+            title = 'Probably not a reverse Shell'
+        return ( title, description )
 
     def user_event(self, event):
         title = 'Unknown user event'
         try:
-            m = re.search('(?<=proctitle=).+', event)
+            m = re.search('(?<= proctitle=).+', event)
             result = m.group(0).strip()
             if 'useradd' in result or 'adduser' in result:
                 title = 'New user detected \''+ result[result.rindex(' ')+1:]+'\''
@@ -65,6 +149,7 @@ class Parser():
         try:
             m = re.search('(?<=type=SYSCALL ).+', event)
             description = m.group(0).strip()
+            description += '\n\n'+event+'\n'
         except AttributeError:
             description = m
         return ( title, description )
@@ -94,12 +179,24 @@ class Alert(urwid.PopUpLauncher):
     def __init__(self, title, message):
         Alert.count += 1
         self.id = Alert.count
-        title = expand_tab(str(self.id) + '.\t'+ title)
-        self.__super.__init__(urwid.Button(title))
+        self.title = expand_tab(str(self.id) + '.\t'+ title)
+        self.__super.__init__(urwid.Button(self.title))
         urwid.connect_signal(self.original_widget, 'click',
             lambda button: self.open_pop_up())
-        self.pop_up = PopUpDialog('\n'+title+'\n',message+'\n\n')
+        self.pop_up = PopUpDialog('\n'+title+'\n',message)
         self.message = message
+        try:
+            self.pid = int(re.search('(?<= pid=)(\d+)', message).group(0))
+        except AttributeError:
+            self.pid = 0
+        try:
+            self.ppid = int(re.search('(?<= ppid=)(\d+)', message).group(0))
+        except AttributeError:
+            self.ppid = 0
+        try:
+            self.key = re.search('(?<= key=)(\w+)', message).group(0)
+        except AttributeError:
+            self.key = ''
         TUI.header.contents[1][0].set_text('Last event: '+str(Alert.count))
 
     def create_pop_up(self):
@@ -110,7 +207,7 @@ class Alert(urwid.PopUpLauncher):
     def get_pop_up_parameters(self):
         colsrows = urwid.raw_display.Screen().get_cols_rows()
         cols = colsrows[0]-4
-        rows = max(7, int(len(self.message)/int(cols/2))+1)
+        rows = max(7, urwid.Text(self.message).pack((cols,))[1]+5)
         return {'left':0, 'top':1, 'overlay_width':cols, 'overlay_height':rows}
 
     def set_description(self, message):
@@ -122,7 +219,10 @@ class TUI():
     animate_alarm = None
     palette = []
     placeholder = urwid.SolidFill()
+    show_list = []
     alerts = [] 
+    filtered = []
+    show_mode = False
     lb = None
     frame = None
     content = None
@@ -139,38 +239,75 @@ class TUI():
         search_widgets = [('weight', 3, TUI.search_text), ('weight', 1, TUI.search_button)] 
         TUI.footer_search = urwid.Columns(search_widgets, dividechars=3, min_width=4)
         self.draw()
+
     def search(self, state):
         query = TUI.search_text.get_edit_text()
         message = ''
+        success_msg = ' Search success '
+        filtered = False
+        if TUI.show_mode:
+            TUI.show_mode = False
+            self.update_ui()
         try:
-            m = re.findall(r'\b(\S+)=(\S+?)\b', query)
+            m = re.findall(r'\b(\w+)=(\S+)\b', query)
             if len(m) == 0:
                 raise AttributeError
             for term in m:
                 key = term[0]
                 value = term[1]
                 message = ('nomatch', ' No match found ')
-                if(key == 'j' ):
+                jump_index = TUI.lb.get_focus()[1]
+
+                if(key in ('j', 'jump')):
                     jump_index = int(value)-1
-                    if jump_index < Alert.count:
+                    if 0 <= jump_index and jump_index < Alert.count:
                         TUI.frame.focus_position = 'body'
                         TUI.lb.body.set_focus(jump_index)
-                        message = ('success', ' Search success ')
-                else:
-                    raise AttributeError
-        except AttributeError:
+                        message = ('success', success_msg)
+                elif(key in ('k', 'key')):
+                    for alert in TUI.alerts[jump_index+1:]:
+                        if alert.key == value:
+                            jump_index = alert.id -1
+                            TUI.frame.focus_position = 'body'
+                            TUI.lb.body.set_focus(jump_index)
+                            if filtered:
+                                success_msg = ' Search filtered '
+                                TUI.filtered.append(TUI.alerts[jump_index])
+                            message = ('success', success_msg)
+                            if not filtered:
+                                break
+                elif(key in ('s', 'search')):
+                    for alert in TUI.alerts[jump_index+1:]:
+                        if value in alert.message or value in alert.title:
+                            jump_index = alert.id-1
+                            TUI.frame.focus_position = 'body'
+                            TUI.lb.body.set_focus(jump_index)
+                            if filtered:
+                                success_msg = ' Search filtered '
+                                TUI.filtered.append(TUI.alerts[jump_index])
+                            message = ('success', success_msg)
+                            if not filtered:
+                                break
+                elif(key in ('f', 'filter')):
+                    if value in ('true', 't', 'y', 'yes'):
+                        TUI.filtered = []
+                        filtered = True
+
+        except (AttributeError, ValueError) as e:
             message = ('invalid', ' Invalid search ')
+        except TypeError:
+            message = ('invalid', ' Cannot search ')
         if message:
             TUI.header.contents[2][0].set_text(message)
+        if filtered:
+            TUI.show_mode = True 
+        else:
+            TUI.show_mode = False
 
     def handle_input(self, key):
         if key in ('q', 'Q'):
             raise urwid.ExitMainLoop()
-        elif key in ('c', 'C'):
-            TUI.alerts.clear()
-            TUI.content[:] = TUI.alerts
-            self.change_screen()
-        elif key in ('s', 'S'):
+        elif key in ('/', 's', 'S'):
             TUI.frame.focus_position = 'footer'
             TUI.footer_search.focus_position = 0
         elif key == 'esc':
@@ -198,7 +335,7 @@ class TUI():
         ('invalid', 'yellow', 'dark red'),
         ('nomatch', 'white', 'dark blue')
         ]
-        TUI.content = urwid.SimpleFocusListWalker(TUI.alerts)
+        TUI.content = urwid.SimpleFocusListWalker(TUI.show_list)
         TUI.lb = urwid.ListBox(TUI.content)
         self.change_screen()
         TUI.loop = urwid.MainLoop(
@@ -210,10 +347,11 @@ class TUI():
         TUI.loop.run()
 
     def change_screen(self):
-        warning =  False if len(TUI.alerts) == 0 else True
+        TUI.show_list = TUI.filtered if TUI.show_mode else TUI.alerts
+        warning =  False if len(TUI.show_list) == 0 else True
         bg_color = 'a_bg' if warning else 'c_bg'
         if warning:
-            streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.alerts), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
+            streak = urwid.AttrMap(urwid.BoxAdapter(TUI.lb, height=min(len(TUI.show_list), MAX_ALERTS)), 'a_streak' if warning else 'c_streak')
         elif TUI.status:
             streak = urwid.AttrMap(urwid.Text(('c_banner', u'No valid files to parse!'), align='center'), 'c_streak')
             bg_color = 'warning'
@@ -245,7 +383,7 @@ class TUI():
 
     def update_ui(self, loop=None, user_data=None):
         self.change_screen() 
-        TUI.content[:] = TUI.alerts
+        TUI.content[:] = TUI.show_list
         TUI.animate_alarm = TUI.loop.set_alarm_in(0.1, self.update_ui)
 
 def expand_tab(text: str, width: int = TAB_SIZE):
